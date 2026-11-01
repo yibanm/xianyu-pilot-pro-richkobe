@@ -89,7 +89,10 @@ jobs:
         # 上游测试代码 XianyuTradeOrderControllerTest 用 2 参数调 4 参数的 Controller
         # 构造函数，属上游既有编译错误，与桌面打包无关；本 job 的职责是产出可运行 jar，
         # 单元测试由仓库既有 ci.yml 单独负责。
-        run: mvn --batch-mode --no-transfer-progress -Dmaven.test.skip=true package
+        # 引号必需：shell 是 pwsh，PowerShell 会把 -Dmaven.test.skip=true 在 "." 处
+        # 拆成 "-Dmaven" 与 ".test.skip=true"（"." 是 dot-sourcing 操作符），导致
+        # Maven 报 "Unknown lifecycle phase .test.skip=true"。引号让其作为单一字符串传递。
+        run: mvn --batch-mode --no-transfer-progress "-Dmaven.test.skip=true" package
 
       - name: Build crawler-service
         working-directory: apps/crawler-service
