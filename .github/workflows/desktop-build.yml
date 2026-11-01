@@ -85,7 +85,11 @@ jobs:
       # ---- 应用产物构建 ----
       - name: Build core-api
         working-directory: apps/core-api
-        run: mvn --batch-mode --no-transfer-progress -DskipTests package
+        # maven.test.skip=true 同时跳过测试的编译与运行（-DskipTests 只跳运行、仍编译）。
+        # 上游测试代码 XianyuTradeOrderControllerTest 用 2 参数调 4 参数的 Controller
+        # 构造函数，属上游既有编译错误，与桌面打包无关；本 job 的职责是产出可运行 jar，
+        # 单元测试由仓库既有 ci.yml 单独负责。
+        run: mvn --batch-mode --no-transfer-progress -Dmaven.test.skip=true package
 
       - name: Build crawler-service
         working-directory: apps/crawler-service
