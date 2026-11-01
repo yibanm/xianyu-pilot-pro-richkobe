@@ -1,0 +1,168 @@
+name: Desktop Build
+
+# 桌面版（Tauri + 全部服务）构建。
+# 遵守项目规约：只在开发分支构建，产物走 artifact 供本地测试；
+# 不打 tag、不发 Release —— 那需要用户明确指示。
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - win-desktop-bundle
+    paths:
+      - 'apps/desktop/**'
+      - 'apps/core-api/**'
+      - 'apps/automation-service/**'
+      - 'apps/crawler-service/**'
+      - 'apps/user-web/**'
+      - 'apps/admin-web/**'
+      - 'scripts/desktop/**'
+      - '.github/workflows/desktop-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # 与仓库既有 ci.yml 相同的 SHA 固定策略（供应链安全）
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # ---- 工具链 ----
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: apps/desktop -> target
+
+      - name: Setup Node
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          # .node-version 钉死 24.18.0，dev-start.ps1 有 fail-closed 精确校验
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            apps/crawler-service/package-lock.json
+            apps/user-web/package-lock.json
+            apps/admin-web/package-lock.json
+
+      - name: Setup Java
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          # pom.xml 的 java.version 是 17；runner 预装的更新版会让 Spring Boot 插件报版本不符
+          java-version: '17'
+          cache: maven
+
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          # automation-service 的目标运行时是 3.12；prepare-payload 用它做 --target 安装
+          python-version: '3.12.10'
+
+      # ---- 应用产物构建 ----
+      - name: Build core-api
+        working-directory: apps/core-api
+        run: ./mvnw.cmd --batch-mode --no-transfer-progress -DskipTests package
+
+      - name: Build crawler-service
+        working-directory: apps/crawler-service
+        run: |
+          npm ci --no-audit --no-fund --strict-allow-scripts
+          npm run build
+          # 只留生产依赖，devDependencies（tsx/typescript 等）不进产物
+          npm prune --omit=dev --no-audit --no-fund --strict-allow-scripts
+
+      - name: Build user-web
+        working-directory: apps/user-web
+        run: |
+          npm ci --no-audit --no-fund --strict-allow-scripts
+          npm run build
+
+      - name: Build admin-web
+        working-directory: apps/admin-web
+        run: |
+          npm ci --no-audit --no-fund --strict-allow-scripts
+          npm run typecheck
+          npm run build
+
+      # ---- 运行时与 payload ----
+      - name: Prepare payload (runtimes + app artifacts)
+        run: ./scripts/desktop/prepare-payload.ps1
+
+      - name: Report payload size
+        run: |
+          $payload = 'apps/desktop/payload'
+          $total = (Get-ChildItem $payload -Recurse -Force -File |
+            Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host ("payload 解压后合计: {0:N1} MB" -f $total)
+          Get-ChildItem $payload -Recurse -Directory -Depth 1 | ForEach-Object {
+            $mb = (Get-ChildItem $_.FullName -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host ("  {0,-30} {1,8:N1} MB" -f $_.FullName.Substring((Resolve-Path $payload).Path.Length+1), $mb)
+          }
+
+      # ---- Tauri 构建（官方 action，MIT）----
+      - name: Build Tauri bundle
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
+        env:
+          # 不传 GITHUB_TOKEN：本 workflow 不发 Release，只出 artifact
+          TAURI_SIGNING_PRIVATE_KEY: ''
+        with:
+          projectPath: apps/desktop
+          args: --target x86_64-pc-windows-msvc
+
+      # ---- 产物收集 ----
+      - name: Collect and rename artifacts
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'dist-release'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+
+          $ver = (Get-Content apps/desktop/tauri.conf.json -Raw | ConvertFrom-Json).version
+
+          # NSIS 安装版
+          $nsis = Get-ChildItem 'apps/desktop/target' -Recurse -Filter '*-setup.exe' |
+            Select-Object -First 1
+          if (-not $nsis) { throw '未找到 NSIS 安装器产物' }
+          Copy-Item $nsis.FullName (Join-Path $out "xianyu-pilot-pro-$ver-windows-x64-setup.exe")
+
+          # 便携版：把 exe 与 payload 一起打成 zip
+          $exe = Get-ChildItem 'apps/desktop/target/x86_64-pc-windows-msvc/release' -Filter '*.exe' |
+            Where-Object Name -notlike '*-setup.exe' | Select-Object -First 1
+          if (-not $exe) { throw '未找到裸 exe，无法制作便携版' }
+
+          $stage = Join-Path $env:RUNNER_TEMP 'portable'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $exe.FullName (Join-Path $stage $exe.Name)
+          Copy-Item 'apps/desktop/payload/runtime' (Join-Path $stage 'runtime') -Recurse -Force
+          Copy-Item 'apps/desktop/payload/app' (Join-Path $stage 'app') -Recurse -Force
+
+          $zip = Join-Path $out "xianyu-pilot-pro-$ver-windows-x64-portable.zip"
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+
+          Get-ChildItem $out | ForEach-Object {
+            Write-Host ("{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB))
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xianyu-pilot-pro-windows-x64
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 30
