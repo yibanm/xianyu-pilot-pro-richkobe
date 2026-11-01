@@ -25,8 +25,8 @@ param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     # 下载缓存目录（CI 里可指向 actions/cache 的路径）
     [string]$CacheDir = (Join-Path $env:TEMP 'xypilot-dl'),
-    # 输出目录
-    [string]$OutDir = (Join-Path $PSScriptRoot '..\payload'),
+    # 输出目录：必须是 apps/desktop/payload（tauri.conf.json 的 bundle.resources 指向它）
+    [string]$OutDir = (Join-Path $PSScriptRoot '..\..\apps\desktop\payload'),
     # 跳过前端/后端构建（仅拉运行时，用于本地调试）
     [switch]$RuntimeOnly
 )
