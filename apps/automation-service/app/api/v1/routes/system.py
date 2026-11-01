@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from ....core.config import settings
 from ....core.database import get_db
 from ....core.http_failures import safe_route_failure
 from ....core.response import ResultObject
@@ -255,7 +256,7 @@ async def get_system_info():
         "language": "Python",
         "framework": "FastAPI",
         "database": "MySQL",
-        "port": 12401
+        "port": settings.server_port
     })
 
 
