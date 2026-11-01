@@ -1,0 +1,33 @@
+[package]
+name = "xianyu-pilot-pro-desktop"
+version = "1.0.0"
+description = "闲鱼助手科比版 — 一键式桌面客户端（集成全部服务的 Tauri 壳）"
+authors = ["yibanm"]
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net", "io-util", "time", "sync", "fs", "signal"] }
+axum = { version = "0.8", features = ["http1", "tokio"] }
+# 反代客户端：reqwest 的流式 body 天然不缓冲，SSE 直接透传
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+futures-util = "0.3"
+bytes = "1"
+mime_guess = "2"
+anyhow = "1"
+rand = "0.8"
+hex = "0.4"
+
+[profile.release]
+# 便携版体积优先：优化尺寸、去符号、单编译单元、LTO
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
