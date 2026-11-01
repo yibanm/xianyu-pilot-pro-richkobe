@@ -426,10 +426,11 @@ fn normalize_within_root(candidate: &Path, root: &Path) -> Option<PathBuf> {
             other => out.push(other.as_os_str()),
         }
     }
-    // root 自身必须是 out 的前缀
-    let root_str = root.to_string_lossy().replace('/', "\\").to_lowercase();
-    let out_str = out.to_string_lossy().replace('/', "\\").to_lowercase();
-    if out_str.starts_with(&root_str) {
+    // 必须用 Path::starts_with（按路径组件比较），不能用字符串前缀。
+    // 字符串前缀有漏洞：root=C:\app\web 时，同级目录 C:\app\web-secret 的字符串
+    // 也以 "C:\app\web" 开头，会被误判为在 root 内，导致可读取 root 的同级文件。
+    // Path::starts_with 按组件比较，"web-secret" != "web"，正确拒绝。
+    if out.starts_with(root) {
         Some(out)
     } else {
         None
@@ -457,3 +458,116 @@ pub async fn serve(cfg: SiteConfig, port: u16) -> Result<SocketAddr> {
 
     Ok(local)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(prefix: &'static str, carousel: bool) -> ProxyRule {
+        ProxyRule {
+            prefix,
+            strip_prefix: false,
+            target: Arc::new(Mutex::new(String::new())),
+            read_timeout: Duration::from_secs(300),
+            carousel_rewrite: carousel,
+        }
+    }
+
+    // ---- 目录穿越防护：normalize_within_root ----
+
+    #[test]
+    fn traversal_below_root_is_allowed() {
+        let root = Path::new("C:\\app\\web");
+        let candidate = root.join("assets").join("index.js");
+        assert!(normalize_within_root(&candidate, root).is_some());
+    }
+
+    #[test]
+    fn traversal_escaping_root_is_rejected() {
+        // /../ 试图逃出 web 根，读到 secrets.json —— 必须返回 None
+        let root = Path::new("C:\\app\\web");
+        let candidate = root.join("..").join("..").join("data").join("config").join("secrets.json");
+        assert!(normalize_within_root(&candidate, root).is_none());
+    }
+
+    #[test]
+    fn traversal_exactly_to_root_is_allowed() {
+        // ./ 归一化后停在 root 本身，合法
+        let root = Path::new("C:\\app\\web");
+        let candidate = root.join(".").join("index.html");
+        let got = normalize_within_root(&candidate, root);
+        assert!(got.is_some());
+    }
+
+    #[test]
+    fn traversal_sibling_prefix_attack_is_rejected() {
+        // root = C:\app\web，候选 C:\app\web-secret：字符串前缀相同但不同目录，
+        // 这是「按字符串前缀判断包含」的经典漏洞，必须拒绝
+        let root = Path::new("C:\\app\\web");
+        let candidate = Path::new("C:\\app\\web-secret\\x.txt");
+        assert!(normalize_within_root(candidate, root).is_none());
+    }
+
+    // ---- 反代路由：最长前缀优先（nginx ^~ 语义）----
+
+    #[test]
+    fn longest_prefix_wins() {
+        let cfg = SiteConfig {
+            root: PathBuf::from("C:\\app\\web"),
+            name: "user-web",
+            proxies: vec![
+                rule("/uploads/images/carousel_", true),
+                rule("/uploads/", false),
+                rule("/api/", false),
+            ],
+        };
+        // carousel 更长，必须优先于通用 /uploads/ 命中
+        let hit = cfg.match_proxy("/uploads/images/carousel_1.png");
+        assert!(hit.is_some());
+        assert!(hit.unwrap().carousel_rewrite, "carousel 路径必须走重写规则");
+
+        // 普通 uploads 命中通用规则，不重写
+        let hit = cfg.match_proxy("/uploads/tenant-1/a.png");
+        assert!(hit.is_some());
+        assert!(!hit.unwrap().carousel_rewrite);
+    }
+
+    #[test]
+    fn unmatched_path_returns_none() {
+        let cfg = SiteConfig {
+            root: PathBuf::from("C:\\app\\web"),
+            name: "user-web",
+            proxies: vec![rule("/api/", false)],
+        };
+        // 静态资源路径不应命中任何反代规则，交由 serve_static 处理
+        assert!(cfg.match_proxy("/assets/index.js").is_none());
+        assert!(cfg.match_proxy("/").is_none());
+    }
+
+    #[test]
+    fn sse_prefix_matches_under_api() {
+        let cfg = SiteConfig {
+            root: PathBuf::from("C:\\app\\web"),
+            name: "user-web",
+            proxies: vec![rule("/api/sse/", false), rule("/api/", false)],
+        };
+        // /api/sse/ 比 /api/ 长，SSE 请求应命中更具体的规则（其超时更长）
+        let hit = cfg.match_proxy("/api/sse/stream");
+        assert_eq!(hit.unwrap().prefix, "/api/sse/");
+    }
+
+    // ---- 静态扩展名判定（决定 SPA fallback 是否生效）----
+
+    #[test]
+    fn static_ext_detection() {
+        assert!(has_static_ext("/assets/index-a1b2.js"));
+        assert!(has_static_ext("/favicon.ico"));
+        assert!(has_static_ext("/a.css"));
+        // 带 query 仍应识别扩展名
+        assert!(has_static_ext("/x.js?v=1"));
+        // HTML 与无扩展名不算静态资源，需要 SPA fallback
+        assert!(!has_static_ext("/index.html"));
+        assert!(!has_static_ext("/some/route"));
+    }
+}
+
