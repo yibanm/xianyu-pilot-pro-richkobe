@@ -22,7 +22,8 @@
       }
     },
     "resources": {
-      "payload": "payload"
+      "payload/runtime": "runtime",
+      "payload/app": "app"
     }
   }
 }

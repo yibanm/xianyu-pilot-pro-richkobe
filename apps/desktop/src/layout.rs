@@ -99,40 +99,82 @@ impl Layout {
 
 /// 从 exe 所在位置推导布局。
 ///
-/// 开发期（cargo run）exe 在 target/debug 下，此时回退到环境变量
-/// XYPILOT_ROOT 指定的根目录，便于本地联调。
+/// 三种来源，按优先级探测：
+/// 1. **便携版**：runtime/app 与 exe 同级（CI 打包时这样摆放），data/logs 也放同级，
+///    做到「解压即用、数据随程序走」；
+/// 2. **安装版（NSIS）**：Tauri 把 bundle.resources 放到 `<exe目录>/resources/` 下，
+///    故 runtime/app 在 `<exe>/resources/`；data/logs 必须放到可写的
+///    `%LOCALAPPDATA%\XianyuPilotPro\`——安装目录（Program Files）通常只读，
+///    且升级会覆盖，把数据库放那里会丢数据；
+/// 3. **开发期**：`XYPILOT_ROOT` 指向已准备好的根目录。
 pub fn detect_layout() -> Result<Layout> {
     let exe = std::env::current_exe().context("无法定位当前可执行文件")?;
+    let exe_dir = exe.parent().context("exe 无父目录")?.to_path_buf();
 
-    // 打包后：exe 与 runtime/app 同级
-    let candidate = exe
-        .parent()
-        .context("exe 无父目录")?
-        .to_path_buf();
-
-    let root = if candidate.join("runtime").is_dir() && candidate.join("app").is_dir() {
-        candidate
-    } else if let Ok(env_root) = std::env::var("XYPILOT_ROOT") {
-        let p = PathBuf::from(env_root);
-        if !p.is_dir() {
-            bail!("XYPILOT_ROOT 指向的目录不存在: {p:?}");
+    // 开发期显式指定优先
+    if let Ok(env_root) = std::env::var("XYPILOT_ROOT") {
+        let root = PathBuf::from(env_root);
+        if !root.is_dir() {
+            bail!("XYPILOT_ROOT 指向的目录不存在: {root:?}");
         }
-        p
+        if !root.join("runtime").is_dir() || !root.join("app").is_dir() {
+            bail!("XYPILOT_ROOT={root:?} 下缺少 runtime/ 或 app/");
+        }
+        return Ok(Layout {
+            runtime: root.join("runtime"),
+            app: root.join("app"),
+            data: root.join("data"),
+            logs: root.join("logs"),
+            root,
+        });
+    }
+
+    // 便携版判据：runtime 直接在 exe 同级
+    let portable = exe_dir.join("runtime").is_dir() && exe_dir.join("app").is_dir();
+    // 安装版判据：runtime 在 exe/resources 下（Tauri resources 落地位置）
+    let resources_dir = exe_dir.join("resources");
+    let installed = resources_dir.join("runtime").is_dir() && resources_dir.join("app").is_dir();
+
+    let bundle_root = if portable {
+        exe_dir.clone()
+    } else if installed {
+        resources_dir.clone()
     } else {
         bail!(
-            "未找到运行时目录布局（{:?} 下无 runtime/ 与 app/）。\n\
-             开发期请设 XYPILOT_ROOT 指向已准备好的根目录。",
-            candidate
+            "未找到运行时布局：{:?} 及其 resources/ 子目录下都没有 runtime/ 与 app/。\n\
+             安装版请通过安装包正确安装；开发期请设 XYPILOT_ROOT 指向已准备好的根目录。",
+            exe_dir
         );
     };
 
+    // data/logs：便携版随程序走；安装版放可写的 %LOCALAPPDATA%
+    let writable_root = if portable {
+        exe_dir.clone()
+    } else {
+        local_app_data()?.join("XianyuPilotPro")
+    };
+
     Ok(Layout {
-        runtime: root.join("runtime"),
-        app: root.join("app"),
-        data: root.join("data"),
-        logs: root.join("logs"),
-        root,
+        runtime: bundle_root.join("runtime"),
+        app: bundle_root.join("app"),
+        data: writable_root.join("data"),
+        logs: writable_root.join("logs"),
+        root: bundle_root,
     })
+}
+
+/// `%LOCALAPPDATA%`，取不到时回退到用户主目录下的 AppData\Local。
+///
+/// 不用 exe 目录存数据：安装版通常装在 Program Files（只读），且升级会覆盖。
+fn local_app_data() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("LOCALAPPDATA") {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            return Ok(path);
+        }
+    }
+    let home = std::env::var("USERPROFILE").context("无法定位用户目录（LOCALAPPDATA 与 USERPROFILE 均缺失）")?;
+    Ok(PathBuf::from(home).join("AppData").join("Local"))
 }
 
 /// 校验路径为纯 ASCII，否则 MySQL/PostgreSQL 会以难以诊断的方式失败。

@@ -1,0 +1,2 @@
+# 占位：CI 的 prepare-payload.ps1 在此填充 MySQL/PostgreSQL/Redis/JRE/Python/Node/vcruntime。
+# 本地 cargo check 需要此目录存在（tauri-build 编译期校验 bundle.resources 源路径）。

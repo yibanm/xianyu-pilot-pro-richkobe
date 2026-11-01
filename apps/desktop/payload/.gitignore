@@ -1,0 +1,6 @@
+# payload 内容由 CI 的 prepare-payload.ps1 生成（运行时 + 应用产物），
+# 只跟踪骨架 .gitkeep，绝不提交几百 MB 的实际产物。
+runtime/*
+app/*
+!runtime/.gitkeep
+!app/.gitkeep
