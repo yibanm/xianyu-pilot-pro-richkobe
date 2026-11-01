@@ -6,6 +6,7 @@ import fsSync from 'fs';
 import { spawn } from 'child_process';
 import { isSafeBrowserResourceUrl, normalizeGoofishTargetUrl, safeErrorType } from '../policy.js';
 import { ANTI_DETECT_SCRIPT } from './sliderSolver.js';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 
 export interface SearchResultItem {
   itemId?: string;
@@ -588,10 +589,10 @@ export async function crawlGoofishSearch(
       // Linux Docker 内以非 root 用户运行系统 Chrome 必须关闭 sandbox，否则启动失败
       // （Ubuntu 23.10+ AppArmor 限制非特权用户命名空间，Chrome sandbox 无法初始化）
       chromiumSandbox: !isLinux,
-      // 使用真实 Chrome channel（而非 Chromium），降低被 Baxia 识别为自动化的概率
+      // 使用真实浏览器 channel（而非 Chromium），降低被 Baxia 识别为自动化的概率
       // sliderSolver.ts 验证：真实 Chrome + ignoreDefaultArgs 是求解滑块成功的关键配置
-      // Linux 优先使用 channel:'chrome' 调用系统 google-chrome-stable，避免 Chrome for Testing 149 崩溃
-      ...((isWindows || isLinux) ? { channel: 'chrome' } : {}),
+      // Windows 优先 Chrome、无 Chrome 回退系统 Edge；Linux 用 Docker 内的 google-chrome-stable
+      ...resolveSystemBrowserLaunch(),
       // 移除 Playwright 默认的 --enable-automation 参数，这是 Baxia 识别自动化的强信号
       ignoreDefaultArgs: ['--enable-automation'],
       args: [

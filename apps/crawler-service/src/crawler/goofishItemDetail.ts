@@ -1,5 +1,6 @@
 import { chromium, Browser, BrowserContextOptions, Cookie } from 'playwright';
 import { isSafeBrowserResourceUrl, normalizeGoofishTargetUrl } from '../policy.js';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 
 export interface GoofishItemDetail {
   itemId?: string;
@@ -55,7 +56,7 @@ export async function fetchGoofishItemDetail(
     browser = await chromium.launch({
       headless,
       chromiumSandbox: !isLinux,
-      ...((isWindows || isLinux) ? { channel: 'chrome' } : {}),
+      ...resolveSystemBrowserLaunch(),
       args: [
         ...(isLinux ? ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-crash-reporter', '--disable-crashpad', '--disable-breakpad', '--disable-features=Crashpad'] : []),
       ],

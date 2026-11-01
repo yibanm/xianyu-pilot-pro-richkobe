@@ -17,6 +17,7 @@ import os from 'os';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import { spawn } from 'child_process';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 import {
   isAllowedBrowserNavigationUrl,
   isProductionLike,
@@ -2024,6 +2025,10 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
       `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+      // Windows 系统自带 Edge（未装 Chrome 的机器上作为等效的「真实浏览器」；
+      // 同为 Chromium 内核发行版，比 Playwright 内置 Chromium 更难被 Baxia 识别为自动化）
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
       // Linux 系统安装的 google-chrome-stable（Docker 内由 Dockerfile 安装）
       '/opt/google/chrome/chrome',
       '/usr/bin/google-chrome',
@@ -2195,7 +2200,7 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       console.log(`[SliderSolver] chromium.launchPersistentContext 使用自定义 userDataDir: ${playwrightUserDataDir}`);
       context = await chromium.launchPersistentContext(playwrightUserDataDir, {
         headless,
-        ...(isLinux ? { channel: 'chrome' as const } : {}),
+        ...resolveSystemBrowserLaunch(),
         chromiumSandbox: !isLinux,
         // 去掉 Playwright 默认 --enable-automation，显著降低「自动化窗口」被标记概率
         ignoreDefaultArgs: ['--enable-automation'],

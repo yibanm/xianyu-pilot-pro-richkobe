@@ -32,6 +32,7 @@ import {
   stripRiskCookies,
   isHeadedDisplayAvailable,
 } from './sliderSolver.js';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 
 // ============================================================
 // 常量与配置
@@ -142,7 +143,7 @@ async function launchBrowserForFireyejs(
 
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless,
-    ...(isLinux ? { channel: 'chrome' as const } : {}),
+    ...resolveSystemBrowserLaunch(),
     chromiumSandbox: !isLinux,
     ignoreDefaultArgs: ['--enable-automation'],
     viewport: { width: 1280, height: 800 },

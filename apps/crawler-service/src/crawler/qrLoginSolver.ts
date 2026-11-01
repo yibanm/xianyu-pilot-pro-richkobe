@@ -19,6 +19,7 @@
  */
 import { chromium, type Browser, type BrowserContext, type Page, type BrowserContextOptions } from 'playwright';
 import { parseCookieString } from './sliderSolver.js';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 import {
   isAllowedBrowserNavigationUrl,
   isProductionLike,
@@ -98,6 +99,7 @@ export async function solveQrLoginInBrowser(
     browser = await chromium.launch({
       headless,
       chromiumSandbox: true,
+      ...resolveSystemBrowserLaunch(),
       args: [
         '--disable-blink-features=AutomationControlled',
       ],
@@ -290,6 +292,7 @@ export async function captureQrCodeOnly(
     browser = await chromium.launch({
       headless,
       chromiumSandbox: true,
+      ...resolveSystemBrowserLaunch(),
       args: [
         '--disable-blink-features=AutomationControlled',
       ],

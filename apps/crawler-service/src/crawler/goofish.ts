@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { chromium, Browser, Page, type BrowserContext, type Response as PlaywrightResponse } from 'playwright';
 import { parseGoofishStoreUrl } from './parseGoofishStoreUrl.js';
+import { resolveSystemBrowserLaunch } from './browserChannel.js';
 import {
   isProductionLike,
   isSafeBrowserResourceUrl,
@@ -792,7 +793,7 @@ export async function resolveStoreUserId(rawUrl: string, cookieHeader?: string):
     browser = await chromium.launch({
       headless,
       chromiumSandbox: !isLinux,
-      ...((isWindows || isLinux) ? { channel: 'chrome' } : {}),
+      ...resolveSystemBrowserLaunch(),
       args: [
         '--disable-blink-features=AutomationControlled',
         ...(isLinux ? ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-crash-reporter', '--disable-crashpad', '--disable-breakpad', '--disable-features=Crashpad'] : []),
@@ -1007,7 +1008,7 @@ export async function crawlGoofishStoreDetailed(url: string, cookieHeader?: stri
     browser = await chromium.launch({
       headless,
       chromiumSandbox: !isLinux,
-      ...((isWindows || isLinux) ? { channel: 'chrome' } : {}),
+      ...resolveSystemBrowserLaunch(),
       args: [
         '--disable-blink-features=AutomationControlled',
         ...(isLinux ? ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-crash-reporter', '--disable-crashpad', '--disable-breakpad', '--disable-features=Crashpad'] : []),
