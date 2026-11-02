@@ -14,7 +14,7 @@
     font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
     -webkit-user-select: none; user-select: none;
   }
-  .card { width: min(560px, 92vw); padding: 28px 30px; }
+  .card { width: min(620px, 92vw); padding: 28px 30px; }
   h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; letter-spacing: .3px; }
   .sub { font-size: 12.5px; color: #8b929e; margin: 0 0 22px; }
   .spin {
@@ -23,9 +23,28 @@
     border-radius: 50%; animation: r .8s linear infinite;
   }
   @keyframes r { to { transform: rotate(360deg); } }
-  #status { font-size: 13.5px; color: #cfd4dc; min-height: 20px; margin-bottom: 14px; }
+  #status { font-size: 13.5px; color: #cfd4dc; min-height: 20px; margin-bottom: 10px; }
+  /* 进度条：宽度按已完成步骤数 / 预估总步骤数 */
+  #barWrap {
+    height: 6px; background: #23262d; border-radius: 3px;
+    overflow: hidden; margin-bottom: 14px;
+  }
+  #bar {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #2f5fdd, #4c8dff);
+    border-radius: 3px;
+    transition: width .4s ease;
+  }
+  #bar.indet {
+    width: 30%;
+    animation: indet 1.4s ease-in-out infinite;
+  }
+  @keyframes indet {
+    0%   { margin-left: -30%; }
+    100% { margin-left: 100%; }
+  }
   #log {
-    max-height: 190px; overflow-y: auto; font-size: 12px; line-height: 1.75;
+    max-height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.75;
     color: #7d848f; border-top: 1px solid #23262d; padding-top: 12px;
     font-family: Consolas, "Courier New", monospace;
   }
@@ -56,6 +75,7 @@
   <p class="sub">正在启动本地服务，首次运行需要初始化数据库，请耐心等待</p>
 
   <div id="status"><span class="spin"></span><span id="statusText">正在准备…</span></div>
+  <div id="barWrap"><div id="bar" class="indet"></div></div>
   <div id="log"></div>
 
   <div id="err">
@@ -73,43 +93,72 @@
 </div>
 
 <script>
-  // Rust 侧通过 window.eval() 调用这两个函数更新界面。
-  // 用 eval 而非 Tauri 事件：不依赖任何 ACL 权限，启动页零配置即可工作。
-  window.__bootProgress = function (msg) {
+  // 轮询 Rust 侧的 boot_pull 命令拉取进度。
+  // 不用 Rust 主动 eval 推送：页面脚本未就绪时推送会静默丢失。
+  var seen = 0;
+  var TOTAL_STEPS = 14; // 预估总步骤数，仅用于进度条比例，非精确值
+
+  function appendLine(msg) {
     var log = document.getElementById('log');
     var line = document.createElement('div');
     line.textContent = msg;
     log.appendChild(line);
     log.scrollTop = log.scrollHeight;
     document.getElementById('statusText').textContent = msg;
-  };
+    // 进度条：按已收到的步骤数估算
+    var pct = Math.min(96, Math.round((seen / TOTAL_STEPS) * 100));
+    var bar = document.getElementById('bar');
+    bar.classList.remove('indet');
+    bar.style.width = pct + '%';
+  }
 
-  window.__bootError = function (msg) {
+  function showError(msg) {
     document.getElementById('status').style.display = 'none';
+    document.getElementById('barWrap').style.display = 'none';
     document.getElementById('err').style.display = 'block';
     document.getElementById('errText').textContent = msg;
     document.title = '闲鱼助手 · 启动失败';
-  };
+  }
 
-  // 打开日志目录：withGlobalTauri=true 后，window.__TAURI__.core.invoke 可用。
-  // 自定义命令经 invoke_handler 注册后默认可调用，无需额外 capability 声明。
+  function poll() {
+    if (!window.__TAURI__ || !window.__TAURI__.core) {
+      setTimeout(poll, 300); // Tauri 注入尚未就绪，稍后重试
+      return;
+    }
+    window.__TAURI__.core.invoke('boot_pull', { since: seen })
+      .then(function (res) {
+        var lines = res[0], done = res[1], err = res[2];
+        for (var i = 0; i < lines.length; i++) {
+          appendLine(lines[i]);
+          seen++;
+        }
+        if (err) {
+          showError(err);
+          return; // 停止轮询
+        }
+        if (done && !err) {
+          document.getElementById('bar').style.width = '100%';
+          document.getElementById('statusText').textContent = '启动完成';
+          return; // 主窗口即将打开，停止轮询
+        }
+        setTimeout(poll, 600);
+      })
+      .catch(function () {
+        setTimeout(poll, 600); // 命令暂不可用（启动极早期），继续重试
+      });
+  }
+
+  // 打开日志目录 / 退出程序
   window.__openLogs = function () {
-    try {
-      window.__TAURI__.core.invoke('open_logs_dir');
-    } catch (e) {
-      alert('无法打开日志目录: ' + e);
-    }
+    try { window.__TAURI__.core.invoke('open_logs_dir'); }
+    catch (e) { alert('无法打开日志目录: ' + e); }
+  };
+  window.__quit = function () {
+    try { window.__TAURI__.core.invoke('quit_app'); }
+    catch (e) { alert('无法退出: ' + e); }
   };
 
-  // 退出程序：走 Rust 侧的 quit_app，它会先关掉已拉起的子进程再退出。
-  // 不用 location.reload()「重试」——重载页面不会重启后端服务，是个假按钮。
-  window.__quit = function () {
-    try {
-      window.__TAURI__.core.invoke('quit_app');
-    } catch (e) {
-      alert('无法退出: ' + e);
-    }
-  };
+  poll();
 </script>
 </body>
 </html>

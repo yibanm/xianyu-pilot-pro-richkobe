@@ -21,26 +21,40 @@ const MYSQL_INIT_TIMEOUT_SECS: u64 = 180;
 const POSTGRES_INIT_TIMEOUT_SECS: u64 = 120;
 
 /// 执行首次初始化。调用前须已确认 `is_first_run()` 为真。
-pub async fn bootstrap(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Result<()> {
+///
+/// `step` 回调用于把每个子步骤（initdb / 启动 / 建库 / 关闭）上报到启动页——
+/// 首启耗时数分钟，无步骤级反馈时用户只能看到「初始化数据库…」干等，
+/// 且出问题时日志里也看不出卡在哪一步（实测踩过：desktop.log 停在第 4 行）。
+pub async fn bootstrap(
+    layout: &Layout,
+    secrets: &Secrets,
+    ports: &Ports,
+    step: crate::ProgressFn,
+) -> Result<()> {
     // 数据库初始化对路径编码敏感，这里再校验一次（detect 后用户可能移动过目录）
     crate::layout::assert_ascii_path(&layout.mysql_data(), "MySQL 数据目录")?;
     crate::layout::assert_ascii_path(&layout.postgres_data(), "PostgreSQL 数据目录")?;
     crate::layout::assert_ascii_path(&layout.mysql_home(), "MySQL 程序目录")?;
     crate::layout::assert_ascii_path(&layout.postgres_home(), "PostgreSQL 程序目录")?;
 
-    init_mysql(layout, secrets, ports).await?;
-    init_postgres(layout, secrets, ports).await?;
+    init_mysql(layout, secrets, ports, &step).await?;
+    init_postgres(layout, secrets, ports, &step).await?;
 
     Ok(())
 }
 
 // ---------------------------------------------------------------- MySQL
 
-async fn init_mysql(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Result<()> {
+async fn init_mysql(
+    layout: &Layout,
+    secrets: &Secrets,
+    ports: &Ports,
+    step: &crate::ProgressFn,
+) -> Result<()> {
     let datadir = &layout.mysql_data();
 
     if !datadir.join("mysql").is_dir() {
-        eprintln!("[bootstrap] MySQL 初始化数据目录…");
+        step("初始化 MySQL 数据目录（首次约 1 分钟）…".into());
         // --initialize-insecure：root 初始无密码，随后立即改密。
         // 用 insecure 而非 --initialize 是因为后者会把随机密码只写进日志，
         // 解析日志取密码在 Windows 上受编码影响不可靠。
@@ -56,12 +70,15 @@ async fn init_mysql(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Result
         )
         .await
         .context("MySQL initialize-insecure 失败")?;
+        step("MySQL 数据目录初始化完成".into());
+    } else {
+        step("MySQL 数据目录已存在，跳过初始化".into());
     }
 
     // 用临时配置文件启动（端口动态、绑定回环、低内存）
     let cnf = write_mysql_cnf(layout, ports, &secrets.mysql_root_password)?;
 
-    eprintln!("[bootstrap] 启动 MySQL 以建库建用户…");
+    step("启动 MySQL 以建库建用户…".into());
     let mut child = spawn_detached(
         &layout.mysqld(),
         &[&format!("--defaults-file={}", win_path(&cnf))],
@@ -195,11 +212,16 @@ async fn shutdown_mysql(mysql_home: &Path, cnf: &Path) -> Result<()> {
 
 // ------------------------------------------------------------ PostgreSQL
 
-async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Result<()> {
+async fn init_postgres(
+    layout: &Layout,
+    secrets: &Secrets,
+    ports: &Ports,
+    step: &crate::ProgressFn,
+) -> Result<()> {
     let datadir = &layout.postgres_data();
 
     if !datadir.join("PG_VERSION").exists() {
-        eprintln!("[bootstrap] PostgreSQL initdb…");
+        step("初始化 PostgreSQL 数据目录（initdb，约 30 秒）…".into());
         // --no-locale + UTF8：与阶段 0 实测通过的参数一致，避免本地 collation 差异
         run(
             &layout.initdb(),
@@ -221,6 +243,9 @@ async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Res
         )
         .await
         .context("PostgreSQL initdb 失败")?;
+        step("PostgreSQL 数据目录初始化完成".into());
+    } else {
+        step("PostgreSQL 数据目录已存在，跳过初始化".into());
     }
 
     // 低内存配置（实测 shared_buffers=32MB 下常驻约 71MB）
@@ -257,7 +282,7 @@ async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Res
     // initdb --auth=trust 生成的是 trust 认证，必须先靠它连进去设密码，
     // 再切换到 scram；反过来的话 PG 一启动就要求密码，而密码还不存在，直接死锁。
 
-    eprintln!("[bootstrap] 启动 PostgreSQL 以建库…");
+    step("启动 PostgreSQL 以建库…".into());
     let mut child = spawn_detached(
         &layout.postgres_bin(),
         &["-D", &win_path(datadir)],
@@ -293,6 +318,7 @@ async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Res
     );
     // 此刻 pg_hba.conf 仍是 initdb --auth=trust 生成的免密认证，
     // 所以这一步不需要密码即可连入；密码由上面的 ALTER USER 设置。
+    step("创建 PostgreSQL 业务库与账号…".into());
     run_pg(
         &psql,
         ports.postgres,
@@ -303,12 +329,11 @@ async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Res
     .await
     .context("PostgreSQL 建库失败")?;
 
-    eprintln!("[bootstrap] PostgreSQL 就绪，库与账号已创建");
-
-    // 密码已设置，现在才切到 scram 认证。
-    // 顺序不能反：若先切 scram，PG 一启动就要求密码，而密码还不存在，会死锁。
-    // 写入后本次连接仍是 trust，但下面 stop 之后由编排器重启，即强制密码认证。
+    // 密码已设置，现在才切到 scram 认证（顺序不能反，见上方注释）
+    step("切换 PostgreSQL 为密码认证…".into());
     write_pg_hba(datadir)?;
+
+    step("关闭临时 PostgreSQL 实例…".into());
 
     // 优雅关闭：pg_ctl stop
     let pg_ctl = layout.postgres_home().join("bin").join("pg_ctl.exe");
@@ -366,10 +391,13 @@ async fn run_pg(
         .spawn()
         .context("启动 psql 失败")?;
 
-    let out = child
-        .wait_with_output()
-        .await
-        .context("等待 psql 结束失败")?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(RUN_TIMEOUT_SECS),
+        child.wait_with_output(),
+    )
+    .await
+    .context("等待 psql 结束超时")?
+    .context("等待 psql 结束失败")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -391,6 +419,12 @@ fn esc(s: &str) -> String {
 }
 
 /// 运行命令并要求成功退出。stderr 收集后一并报错，便于诊断。
+///
+/// 带 600s 超时：initdb/initialize 正常在 3 分钟内完成；无超时时一旦子进程
+/// 挂住（等输入、等锁、等网络），整个启动流程会无限等待，用户只能干等
+/// （实测踩过：desktop.log 停在「初始化数据库」一行，5 分钟无任何后续）。
+const RUN_TIMEOUT_SECS: u64 = 600;
+
 async fn run(
     program: &Path,
     args: &[&str],
@@ -407,9 +441,11 @@ async fn run(
     }
     cmd.creation_flags_no_window();
 
-    let out = cmd
-        .output()
+    let out = tokio::time::timeout(std::time::Duration::from_secs(RUN_TIMEOUT_SECS), cmd.output())
         .await
+        .with_context(|| {
+            format!("{program:?} 执行超过 {RUN_TIMEOUT_SECS}s 未返回，判定为挂起")
+        })?
         .with_context(|| format!("无法执行 {program:?}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -445,7 +481,13 @@ async fn run_stdin(program: &Path, args: &[&str], stdin_data: &str) -> Result<()
         drop(stdin);
     }
 
-    let out = child.wait_with_output().await.context("等待命令结束失败")?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(RUN_TIMEOUT_SECS),
+        child.wait_with_output(),
+    )
+    .await
+    .context("等待命令结束超时")?
+    .context("等待命令结束失败")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);

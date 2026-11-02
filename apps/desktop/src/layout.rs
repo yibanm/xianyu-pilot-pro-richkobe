@@ -214,6 +214,9 @@ pub fn ensure_dirs(layout: &Layout) -> Result<()> {
 
 /// 判断是否首次运行（数据库尚未初始化）。
 pub fn is_first_run(layout: &Layout) -> bool {
-    // MySQL 的系统库目录存在即视为已初始化
-    !layout.mysql_data().join("mysql").is_dir()
+    // MySQL 或 PostgreSQL 任一未初始化即视为首启。
+    // 只判 MySQL 有漏洞：某次失败运行可能已初始化 MySQL、死在 PG initdb，
+    // 下次启动会因 MySQL 已存在而跳过整个 bootstrap，PG 永远得不到初始化。
+    // bootstrap 内部对两者各有幂等守卫（检查 datadir 是否已建），重复进入安全。
+    !layout.mysql_data().join("mysql").is_dir() || !layout.postgres_data().join("PG_VERSION").exists()
 }

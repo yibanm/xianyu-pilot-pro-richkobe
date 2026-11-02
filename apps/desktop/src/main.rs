@@ -24,6 +24,21 @@ struct AppState {
     orchestrator: Mutex<Option<Arc<Orchestrator>>>,
     admin_url: Mutex<Option<String>>,
     layout: Mutex<Option<layout::Layout>>,
+    /// 启动进度缓冲：页面轮询 boot_pull 拉取。
+    ///
+    /// 为什么用拉取而非 window.eval 推送：eval 在页面脚本尚未执行时调用会
+    /// 抛 ReferenceError（__bootProgress 未定义），而 Rust 侧 `let _ =` 把错误
+    /// 吞掉，导致进度一条都不显示（用户实测：卡在「正在准备…」5 分钟）。
+    /// 拉取式无此时序问题。
+    boot: Mutex<BootState>,
+}
+
+#[derive(Default)]
+struct BootState {
+    lines: Vec<String>,
+    done: bool,
+    /// 启动失败时的错误详情。走拉取而非 eval：页面脚本未就绪时 eval 会静默丢失。
+    error: Option<String>,
 }
 
 /// 启动进度回调。
@@ -32,19 +47,12 @@ struct AppState {
 /// 约束无法满足；且 run_startup 内部还要再包一层写日志，Arc 便于共享。
 type ProgressFn = Arc<dyn Fn(String) + Send + Sync>;
 
-/// 把 Rust 字符串安全编码为 JS 字符串字面量（含引号），供 window.eval 使用。
-///
-/// 启动进度与错误信息会含用户路径、换行、引号，直接拼进 JS 会造成语法错误
-/// 甚至注入。用 serde_json 转义可一并覆盖全部特殊字符。
-fn js_string(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
-}
-
 fn main() {
     let state = Arc::new(AppState {
         orchestrator: Mutex::new(None),
         admin_url: Mutex::new(None),
         layout: Mutex::new(None),
+        boot: Mutex::new(BootState::default()),
     });
 
     // setup 与 on_window_event 都是 move 闭包，会各自消费一个 Arc。
@@ -57,7 +65,8 @@ fn main() {
             service_status,
             open_admin,
             open_logs_dir,
-            quit_app
+            quit_app,
+            boot_pull
         ])
         .setup(move |app| {
             // 窗口立即创建并显示启动页：绝不在建窗前做任何耗时/可能失败的工作。
@@ -77,18 +86,24 @@ fn main() {
                 // 进度上报：通过 eval 调用启动页里的 __bootProgress()。
                 // 用 eval 而非 Tauri 事件——事件需要在 capabilities 里声明权限，
                 // 而启动页是打包进 frontendDist 的本地文件，eval 零配置可用。
-                // 用 Arc<dyn Fn> 传递：闭包捕获的 WebviewWindow 不是 Copy，
-                // 直接传闭包会因 Copy 约束编译失败。
-                let progress: ProgressFn = Arc::new({
-                    let w = window.clone();
-                    move |msg: String| {
+                // 进度写入共享缓冲，由页面轮询 boot_pull 拉取渲染。
+                // 不再用 window.eval 推送：页面脚本未就绪时 eval 抛 ReferenceError
+                // 且被 `let _ =` 吞掉，导致进度一条不显示（用户实测踩过）。
+                let progress: ProgressFn = {
+                    let st = app_state.clone();
+                    Arc::new(move |msg: String| {
                         eprintln!("[boot] {msg}");
-                        let _ = w.eval(&format!("window.__bootProgress({})", js_string(&msg)));
-                    }
-                });
+                        let st = st.clone();
+                        let m = msg.clone();
+                        tauri::async_runtime::spawn(async move {
+                            st.boot.lock().await.lines.push(m);
+                        });
+                    })
+                };
 
                 match run_startup(&app_state, progress).await {
                     Ok(url) => {
+                        app_state.boot.lock().await.done = true;
                         // 服务与网关就绪：新建承载真实 UI 的窗口，再关掉启动页。
                         // 不在同一窗口 location.replace 到外部 http URL——那受
                         // CSP 与 Tauri 导航权限限制，独立窗口最稳。
@@ -109,17 +124,18 @@ fn main() {
                                         let _ = window.close();
                                     }
                                     Err(e) => {
-                                        show_fatal(&window, &format!("打开主界面失败: {e}"));
+                                        show_fatal(&app_state, &format!("打开主界面失败: {e}"));
                                     }
                                 }
                             }
-                            Err(e) => show_fatal(&window, &format!("网关 URL 非法: {e}")),
+                            Err(e) => show_fatal(&app_state, &format!("网关 URL 非法: {e}")),
                         }
                     }
                     Err(e) => {
                         // 错误显示在启动页里（含日志目录按钮），不静默退出。
                         // 静默退出会让用户只看到窗口一闪而过，无从判断原因。
-                        show_fatal(&window, &format!("{e:#}"));
+                        app_state.boot.lock().await.done = true;
+                        show_fatal(&app_state, &format!("{e:#}"));
                     }
                 }
             });
@@ -166,17 +182,24 @@ fn main() {
 }
 
 /// 在启动页显示致命错误，并把日志目录路径一并给出。
-fn show_fatal(window: &tauri::WebviewWindow, msg: &str) {
+/// 把致命错误写入启动缓冲，由页面轮询 boot_pull 渲染。
+///
+/// 不用 window.eval 推送：页面脚本未就绪时 eval 抛 ReferenceError，
+/// 而 `let _ =` 会把错误吞掉，用户什么都看不到（实测踩过）。
+fn show_fatal(state: &Arc<AppState>, msg: &str) {
     eprintln!("[boot] 启动失败: {msg}");
     // 附加日志目录，让用户能自行取日志反馈
     let hint = match layout::detect_layout() {
         Ok(l) => format!("\n\n日志目录: {}", l.logs.display()),
         Err(_) => String::new(),
     };
-    let _ = window.eval(&format!(
-        "window.__bootError({})",
-        js_string(&format!("{msg}{hint}"))
-    ));
+    let st = state.clone();
+    let full = format!("{msg}{hint}");
+    tauri::async_runtime::spawn(async move {
+        let mut b = st.boot.lock().await;
+        b.error = Some(full);
+        b.done = true;
+    });
 }
 
 /// 完整启动流程。任一步失败返回 Err，由调用方显示到窗口。
@@ -223,7 +246,7 @@ async fn run_startup(app_state: &Arc<AppState>, progress: ProgressFn) -> Result<
 
     if layout::is_first_run(&layout) {
         progress("首次运行：初始化数据库（约 1-3 分钟，请勿关闭窗口）…".into());
-        bootstrap::bootstrap(&layout, &secrets, &ports)
+        bootstrap::bootstrap(&layout, &secrets, &ports, progress.clone())
             .await
             .context("数据库初始化失败")?;
         progress("数据库初始化完成".into());
@@ -290,6 +313,20 @@ async fn service_status(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<(S
         Some(orch) => Ok(orch.status().await),
         None => Ok(vec![("(启动中)".into(), "服务尚未就绪".into())]),
     }
+}
+
+/// 启动页轮询拉取进度。返回 (新增行, 是否已结束, 错误详情)。
+///
+/// 拉取式而非推送式：页面脚本就绪前 Rust 无法可靠地把消息送进页面，
+/// 推送会静默丢失（eval 抛错被吞）；拉取则天然免疫时序问题。
+#[tauri::command]
+async fn boot_pull(
+    state: tauri::State<'_, Arc<AppState>>,
+    since: usize,
+) -> Result<(Vec<String>, bool, Option<String>), String> {
+    let guard = state.boot.lock().await;
+    let lines = guard.lines.iter().skip(since).cloned().collect();
+    Ok((lines, guard.done, guard.error.clone()))
 }
 
 #[tauri::command]
