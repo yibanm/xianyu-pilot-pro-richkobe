@@ -63,6 +63,10 @@ impl Secrets {
             let secrets: Secrets = serde_json::from_str(&raw)
                 .with_context(|| format!("密钥文件格式损坏 {path:?}"))?;
             secrets.validate()?;
+            // 旧版本可能把 ACL 锁成「仅当前用户」，导致管理员也删不掉所在目录树；
+            // restrict 幂等（/grant:r 与 /inheritance:r 重复执行无副作用），每次启动顺带自愈。
+            #[cfg(windows)]
+            restrict_to_current_user(path)?;
             return Ok(secrets);
         }
 
@@ -75,7 +79,7 @@ impl Secrets {
             .context("序列化密钥失败")?;
         fs::write(path, json).with_context(|| format!("写入密钥文件失败 {path:?}"))?;
 
-        // Windows 下收紧权限：仅当前用户可读写
+        // Windows 下收紧权限：仅当前用户与系统管理身份可读写，其他标准用户不可见
         #[cfg(windows)]
         restrict_to_current_user(path)?;
 
@@ -124,13 +128,19 @@ fn restrict_to_current_user(path: &Path) -> Result<()> {
     use std::process::Command;
     let p = path.to_string_lossy().to_string();
 
-    // icacls 是 Windows 自带工具，无需额外依赖
+    // icacls 是 Windows 自带工具，无需额外依赖。
+    // 必须同时保留 Administrators 与 SYSTEM：/inheritance:r 会清掉全部继承 ACE，
+    // 若只授当前用户，提权后的管理员对该文件也没有任何 ACE——
+    // 实测后果：用户删除整个便携版目录树时被这一个文件卡死，
+    // Explorer 报「需要来自 <用户> 的权限」，所有者身份也救不了（删除流程不会先改 ACL）。
     let status = Command::new("icacls")
         .args([
             &p,
             "/inheritance:r", // 移除继承
             "/grant:r",
             &format!("{}:(F)", current_user_name()?),
+            "Administrators:(F)",
+            "SYSTEM:(F)",
         ])
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .status()
