@@ -65,7 +65,8 @@ fn main() {
             let win = WebviewWindowBuilder::new(app, "boot", WebviewUrl::App("index.html".into()))
                 .title("闲鱼助手 · 科比版")
                 .inner_size(720.0, 520.0)
-                .resizable(false)
+                // 允许调整大小与最大化：启动失败时错误文本可能很长，
+                // 固定尺寸会让用户看不全报错内容
                 .build()?;
 
             let handle = app.handle().clone();

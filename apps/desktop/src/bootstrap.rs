@@ -212,8 +212,11 @@ async fn init_postgres(layout: &Layout, secrets: &Secrets, ports: &Ports) -> Res
                 "--encoding=UTF8",
                 "--no-locale",
             ],
-            // initdb 会读 PG 的 locale 环境变量，显式清空避免干扰
-            Some(datadir),
+            // initdb 会读 PG 的 locale 环境变量，显式清空避免干扰。
+            // cwd 必须是 None：datadir 此刻尚不存在（initdb 的职责才是创建它），
+            // 把不存在的目录当 current_dir 会让 spawn 直接报
+            // Windows ERROR_DIRECTORY(267)「目录名称无效」——用户实测踩到过。
+            None,
             &[("LC_ALL", "C")],
         )
         .await
