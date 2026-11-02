@@ -40,7 +40,7 @@ pub struct ServiceSpec {
     pub stage: Stage,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Data,
     Services,
@@ -148,31 +148,28 @@ impl Orchestrator {
         );
     }
 
-    /// 按阶段顺序启动全部服务。任一门禁超时即返回 Err（不静默假装成功）。
-    pub async fn start_all(&self, log_dir: &Path) -> Result<()> {
-        for stage in [
-            Stage::Data,
-            Stage::Services,
-            Stage::CoreApi,
-            Stage::Workers,
-        ] {
-            let names: Vec<String> = {
-                let guard = self.services.lock().await;
-                guard
-                    .iter()
-                    .filter(|(_, m)| m.spec.stage == stage)
-                    .map(|(k, _)| k.clone())
-                    .collect()
-            };
-            for name in &names {
-                self.spawn_one(name, log_dir).await?;
-            }
-            // 阶段内的进程已在上面全部 spawn（同时启动），这里顺序等待健康门禁。
-            // 因为它们是并行运行的，顺序等待的总耗时≈最慢的那个，不损失并行度；
-            // 同时避免了并行 join 所需的 'static 生命周期（wait_healthy 借用 &self 与 name）。
-            for name in &names {
-                self.wait_healthy(name, log_dir).await?;
-            }
+    /// 启动单个阶段：先并行 spawn 该阶段全部进程，再逐个等健康门禁。
+    ///
+    /// 拆成公开方法（而非只在 start_all 内部循环）是为了让调用方能逐阶段推进、
+    /// 在每阶段之间向用户上报启动进度——首次运行要 initdb + 起 9 个服务，
+    /// 耗时数分钟，无进度反馈会让用户以为程序卡死。
+    pub async fn start_stage(&self, stage: Stage, log_dir: &Path) -> Result<()> {
+        let names: Vec<String> = {
+            let guard = self.services.lock().await;
+            guard
+                .iter()
+                .filter(|(_, m)| m.spec.stage == stage)
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        for name in &names {
+            self.spawn_one(name, log_dir).await?;
+        }
+        // 阶段内的进程已在上面全部 spawn（同时启动），这里顺序等待健康门禁。
+        // 因为它们是并行运行的，顺序等待的总耗时≈最慢的那个，不损失并行度；
+        // 同时避免了并行 join 所需的 'static 生命周期（wait_healthy 借用 &self 与 name）。
+        for name in &names {
+            self.wait_healthy(name, log_dir).await?;
         }
         Ok(())
     }

@@ -1,9 +1,115 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>闲鱼助手 · 科比版</title></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>闲鱼助手 · 科比版</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: #14161a; color: #e6e6e6;
+    font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  .card { width: min(560px, 92vw); padding: 28px 30px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub { font-size: 12.5px; color: #8b929e; margin: 0 0 22px; }
+  .spin {
+    width: 15px; height: 15px; display: inline-block; vertical-align: -3px;
+    margin-right: 8px; border: 2px solid #2f3540; border-top-color: #4c8dff;
+    border-radius: 50%; animation: r .8s linear infinite;
+  }
+  @keyframes r { to { transform: rotate(360deg); } }
+  #status { font-size: 13.5px; color: #cfd4dc; min-height: 20px; margin-bottom: 14px; }
+  #log {
+    max-height: 190px; overflow-y: auto; font-size: 12px; line-height: 1.75;
+    color: #7d848f; border-top: 1px solid #23262d; padding-top: 12px;
+    font-family: Consolas, "Courier New", monospace;
+  }
+  #log div { white-space: pre-wrap; word-break: break-all; }
+  #err { display: none; margin-top: 16px; }
+  #err .box {
+    background: #2a1c1e; border: 1px solid #5a2f34; border-radius: 8px;
+    padding: 14px 16px; font-size: 12.5px; line-height: 1.65; color: #f0c9cd;
+    white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow-y: auto;
+    -webkit-user-select: text; user-select: text;
+  }
+  #err h2 { font-size: 14px; margin: 0 0 10px; color: #ff9aa4; font-weight: 600; }
+  .btns { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    background: #23272f; color: #dfe3e9; border: 1px solid #343a45;
+    border-radius: 6px; padding: 7px 14px; font-size: 12.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #2b303a; border-color: #46505e; }
+  button.primary { background: #2f5fdd; border-color: #2f5fdd; color: #fff; }
+  button.primary:hover { background: #3a6cef; }
+  .hint { margin-top: 10px; font-size: 11.5px; color: #6d7480; line-height: 1.6; }
+</style>
+</head>
 <body>
-<!-- 占位页：真实 UI 由网关从 app/web/{user,admin} 的 Vite dist 提供，
-     本文件只用于满足 Tauri 编译期的 frontendDist 校验。 -->
-<p>正在启动本地服务…</p>
+<div class="card">
+  <h1>闲鱼助手 · 科比版</h1>
+  <p class="sub">正在启动本地服务，首次运行需要初始化数据库，请耐心等待</p>
+
+  <div id="status"><span class="spin"></span><span id="statusText">正在准备…</span></div>
+  <div id="log"></div>
+
+  <div id="err">
+    <h2>启动失败</h2>
+    <div class="box" id="errText"></div>
+    <div class="btns">
+      <button class="primary" onclick="window.__openLogs && window.__openLogs()">打开日志目录</button>
+      <button onclick="window.__quit && window.__quit()">退出程序</button>
+    </div>
+    <div class="hint">
+      把上面的错误信息连同日志目录里的文件一起反馈，便于定位问题。<br>
+      常见原因：安装路径含中文（数据库不支持）、端口被占用、杀毒软件拦截。
+    </div>
+  </div>
+</div>
+
+<script>
+  // Rust 侧通过 window.eval() 调用这两个函数更新界面。
+  // 用 eval 而非 Tauri 事件：不依赖任何 ACL 权限，启动页零配置即可工作。
+  window.__bootProgress = function (msg) {
+    var log = document.getElementById('log');
+    var line = document.createElement('div');
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+    document.getElementById('statusText').textContent = msg;
+  };
+
+  window.__bootError = function (msg) {
+    document.getElementById('status').style.display = 'none';
+    document.getElementById('err').style.display = 'block';
+    document.getElementById('errText').textContent = msg;
+    document.title = '闲鱼助手 · 启动失败';
+  };
+
+  // 打开日志目录：withGlobalTauri=true 后，window.__TAURI__.core.invoke 可用。
+  // 自定义命令经 invoke_handler 注册后默认可调用，无需额外 capability 声明。
+  window.__openLogs = function () {
+    try {
+      window.__TAURI__.core.invoke('open_logs_dir');
+    } catch (e) {
+      alert('无法打开日志目录: ' + e);
+    }
+  };
+
+  // 退出程序：走 Rust 侧的 quit_app，它会先关掉已拉起的子进程再退出。
+  // 不用 location.reload()「重试」——重载页面不会重启后端服务，是个假按钮。
+  window.__quit = function () {
+    try {
+      window.__TAURI__.core.invoke('quit_app');
+    } catch (e) {
+      alert('无法退出: ' + e);
+    }
+  };
+</script>
 </body>
 </html>
