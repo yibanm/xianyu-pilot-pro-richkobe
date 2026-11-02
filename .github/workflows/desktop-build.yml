@@ -139,7 +139,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ''
         with:
           projectPath: apps/desktop
-          args: --target x86_64-pc-windows-msvc
+          # --no-bundle：只编译裸 exe，不跑 NSIS/MSI 打包。
+          # 便携版 = 裸 exe + 手动摆放的 runtime/ 与 app/（下一步组装），
+          # 不依赖 Tauri 的 bundle.resources 嵌入；用户裁定暂不出安装版。
+          args: --target x86_64-pc-windows-msvc --no-bundle
 
       # ---- 产物收集 ----
       - name: Collect and rename artifacts
@@ -150,20 +153,16 @@ jobs:
 
           $ver = (Get-Content apps/desktop/tauri.conf.json -Raw | ConvertFrom-Json).version
 
-          # NSIS 安装版
-          $nsis = Get-ChildItem 'apps/desktop/target' -Recurse -Filter '*-setup.exe' |
-            Select-Object -First 1
-          if (-not $nsis) { throw '未找到 NSIS 安装器产物' }
-          Copy-Item $nsis.FullName (Join-Path $out "xianyu-pilot-pro-$ver-windows-x64-setup.exe")
-
-          # 便携版：把 exe 与 payload 一起打成 zip
+          # 便携版：裸 exe（crate 名 xianyu-pilot-pro-desktop）重命名为产品名，
+          # 与 payload 的 runtime/ app/ 一起打成 zip，解压即用
           $exe = Get-ChildItem 'apps/desktop/target/x86_64-pc-windows-msvc/release' -Filter '*.exe' |
             Where-Object Name -notlike '*-setup.exe' | Select-Object -First 1
           if (-not $exe) { throw '未找到裸 exe，无法制作便携版' }
 
           $stage = Join-Path $env:RUNNER_TEMP 'portable'
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item $exe.FullName (Join-Path $stage $exe.Name)
+          # 主程序名用产品名，用户解压后看到的入口更直观
+          Copy-Item $exe.FullName (Join-Path $stage "xianyu-pilot-pro.exe")
           Copy-Item 'apps/desktop/payload/runtime' (Join-Path $stage 'runtime') -Recurse -Force
           Copy-Item 'apps/desktop/payload/app' (Join-Path $stage 'app') -Recurse -Force
 
