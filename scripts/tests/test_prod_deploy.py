@@ -1034,9 +1034,9 @@ def test_managed_infrastructure_guard_blocks_implicit_image_migrations():
     )
 
     assert script is not None
-    assert "mysql:8.4.10" in script
-    assert "redis:7.4.9-alpine" in script
-    assert "postgres:16.14-alpine" in script
+    assert "mysql:8.4.13" in script
+    assert "redis:7.4.12-alpine" in script
+    assert "postgres:16.15-alpine" in script
     assert script.count("exit 42") == 3
     assert script.index("docker inspect") < script.index("exit 42")
 

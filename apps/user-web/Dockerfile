@@ -7,7 +7,7 @@ RUN test "$(node --version)" = "v24.18.0" \
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30.3-alpine
+FROM nginxinc/nginx-unprivileged:1.30.6-alpine
 COPY --from=build --chown=101:101 /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 8080

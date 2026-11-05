@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.61.1-noble AS build
+FROM node:24.18.0-bookworm AS build
 
 WORKDIR /app
 
@@ -13,14 +13,28 @@ COPY migrations ./migrations
 
 RUN npm run build && npm prune --omit=dev --no-audit --strict-allow-scripts
 
-FROM mcr.microsoft.com/playwright:v1.61.1-noble
+FROM node:24.18.0-bookworm
 
 WORKDIR /app
 
 RUN test "$(node --version)" = "v24.18.0" \
     && test "$(npm --version)" = "11.16.0"
 
-# 安装 Xvfb + google-chrome-stable + Python + patchright：
+# 原 base 为 mcr.microsoft.com/playwright:v1.61.1-noble，该镜像国内拉取仅 ~0.05MB/s（2GB 需 11h+，
+# 且所有 registry mirror 均不代理 mcr）。改用 node:24.18.0-bookworm（同为 glibc，可装 chrome deb；
+# node/npm 版本与原 base 一致，故下方版本断言不变），浏览器二进制改走 npmmirror CDN（实测 15MB/s）。
+# pwuser 原由 mcr playwright 镜像内置（uid 1000），此处把 base 自带的 node 用户改名为 pwuser
+# （node:bookworm 已占用 uid/gid 1000，不能再 useradd），以保留 non-root 运行属性与
+# compose 中 /home/pwuser tmpfs 挂载点。
+RUN groupmod --new-name pwuser node \
+    && usermod --login pwuser --home /home/pwuser node \
+    && mkdir -p /home/pwuser \
+    && chown pwuser:pwuser /home/pwuser
+
+# apt 换阿里源：deb.debian.org 实测 252kB/s 且间歇 502 Bad Gateway，会让 chrome 依赖装一半失败
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources
+
+# 安装 Xvfb + google-chrome-stable + Python + patchright + playwright chromium：
 # - Xvfb：让线上 Linux Docker 也能运行有头 Chrome（headless 下 Baxia 风控识别率极高）
 # - google-chrome-stable：Playwright 自带 Chrome for Testing 149 在 Docker headed 模式下崩溃
 #   (SIGTRAP / chrome_crashpad_handler: --database is required)，改用系统 Chrome 通过
@@ -28,15 +42,17 @@ RUN test "$(node --version)" = "v24.18.0" \
 # - python3 + patchright：商机发掘搜索的 Python 兜底脚本（goofishSearch.py）依赖 patchright
 #   反检测分支（自动清理 CDP 痕迹），是 Node Playwright 触发 Baxia 风控后的关键兜底。
 #   注意：仅用于商机发掘搜索（goofishSearch.ts），不影响滑块求解（sliderSolver.ts 仍走 Node Playwright）。
-RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb && \
-    apt-get update && apt-get install -y --no-install-recommends \
+# - playwright chromium：qrLoginSolver.ts 的两处 chromium.launch 未传 channel，走自带浏览器
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        wget \
         xvfb \
         xauth \
         xdotool \
         python3 \
         python3-pip \
         python3-venv \
-        /tmp/chrome.deb \
+    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb \
+    && apt-get -o Acquire::Retries=5 install -y /tmp/chrome.deb \
     && rm -rf /var/lib/apt/lists/* /tmp/chrome.deb \
     && python3 -m pip install --no-cache-dir --break-system-packages \
         -i https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -51,6 +67,17 @@ COPY --from=build --chown=pwuser:pwuser /app/migrations ./migrations
 # 复制 Python 兜底脚本（goofishSearch.py + sliderSolve.py）到镜像根目录
 # 这两个脚本仅在商机发掘搜索触发 Baxia 风控时被调用，不影响滑块求解模块
 COPY --chown=pwuser:pwuser goofishSearch.py sliderSolve.py ./
+
+# 浏览器装到固定路径并持久化：否则运行时 chromium.launch() 会去 $HOME/.cache 找不到浏览器
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+# --with-deps 让 playwright 自己算 chromium 需要的 apt 库，避免手写清单漏库
+RUN apt-get -o Acquire::Retries=5 update \
+    && npx playwright install --with-deps chromium \
+    && chown -R pwuser:pwuser /ms-playwright \
+    && rm -rf /var/lib/apt/lists/* \
+    && node -e "const{chromium}=require('playwright');chromium.launch({args:['--no-sandbox']}).then(async b=>{console.log('chromium OK',b.version());await b.close()}).catch(e=>{console.error('chromium FAIL',e.message);process.exit(1)})" \
+    && node -e "const{chromium}=require('playwright');chromium.launch({channel:'chrome',args:['--no-sandbox']}).then(async b=>{console.log('channel:chrome OK',b.version());await b.close()}).catch(e=>{console.error('channel:chrome FAIL',e.message);process.exit(1)})"
 
 ENV NODE_ENV=production
 # 保留 HEADLESS=true 作为滑块求解（sliderSolver.ts）的默认配置。

@@ -350,13 +350,13 @@ jobs:
             context: ./apps/user-web
           - id: mysql
             kind: pull
-            image: mysql:8.4.10
+            image: mysql:8.4.13
           - id: redis
             kind: pull
-            image: redis:7.4.9-alpine
+            image: redis:7.4.12-alpine
           - id: crawler-postgres
             kind: pull
-            image: postgres:16.14-alpine
+            image: postgres:16.15-alpine
           - id: blackbox-exporter
             kind: pull
             image: quay.io/prometheus/blackbox-exporter:v0.28.0

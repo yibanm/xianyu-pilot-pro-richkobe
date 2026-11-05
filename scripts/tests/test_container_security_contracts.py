@@ -22,14 +22,14 @@ def test_runtime_images_use_non_root_users_and_specific_base_lines():
     assert "USER 10001:10001" in core
     assert "USER 10001:10001" in automation
     assert "USER pwuser" in crawler
-    assert crawler.count("mcr.microsoft.com/playwright:v1.61.1-noble") == 2
+    assert crawler.count("FROM node:24.18.0-bookworm") == 2
     assert "FROM node:24.18.0-alpine AS build" in admin
     assert "FROM node:24.18.0-alpine AS build" in user
     assert "COPY . ." not in crawler
     assert "npm prune --omit=dev" in crawler
     assert "COPY --from=build" in crawler
-    assert "nginxinc/nginx-unprivileged:1.30.3-alpine" in admin
-    assert "nginxinc/nginx-unprivileged:1.30.3-alpine" in user
+    assert "nginxinc/nginx-unprivileged:1.30.6-alpine" in admin
+    assert "nginxinc/nginx-unprivileged:1.30.6-alpine" in user
     assert "EXPOSE 8080" in admin
     assert "EXPOSE 8080" in user
 
@@ -71,16 +71,16 @@ def test_compose_uses_least_privilege_database_account_and_container_guards():
     assert compose.count("COOKIE_CRYPTO_SECRET: ${COOKIE_CRYPTO_SECRET:?COOKIE_CRYPTO_SECRET must be set}") >= 4
     assert "DATABASE_URL: postgres://${CRAWLER_DB_USER" not in compose
     assert compose.count("CRAWLER_DB_PASSWORD: ${CRAWLER_DB_PASSWORD:-crawler_pass}") == 2
-    assert "image: mysql:8.4.10" in compose
-    assert "image: redis:7.4.9-alpine" in compose
-    assert "image: postgres:16.14-alpine" in compose
+    assert "image: mysql:8.4.13" in compose
+    assert "image: redis:7.4.12-alpine" in compose
+    assert "image: postgres:16.15-alpine" in compose
     infrastructure = read("docker-compose.infrastructure.yml")
     for model in (compose, infrastructure):
         assert '--password="$${MYSQL_ROOT_PASSWORD}"' in model
         assert " -p$${MYSQL_ROOT_PASSWORD}" not in model
-    assert "image: mysql:8.4.10" in infrastructure
-    assert "image: redis:7.4.9-alpine" in infrastructure
-    assert "image: postgres:16.14-alpine" in infrastructure
+    assert "image: mysql:8.4.13" in infrastructure
+    assert "image: redis:7.4.12-alpine" in infrastructure
+    assert "image: postgres:16.15-alpine" in infrastructure
 
 
 def test_every_upload_writer_uses_one_writable_volume_and_production_limits_are_explicit():

@@ -40,9 +40,9 @@ ORIGIN_TUNNEL_HOST = "127.0.0.1"
 ORIGIN_TUNNEL_PORT = 18081
 ORIGIN_TUNNEL_HEALTH_PATH = "/api/health"
 MANAGED_INFRASTRUCTURE_IMAGES = {
-    "mysql": ("xianyu-admin-mysql", "mysql:8.4.10"),
-    "redis": ("xianyu-crawler-redis", "redis:7.4.9-alpine"),
-    "crawler-postgres": ("xianyu-crawler-postgres", "postgres:16.14-alpine"),
+    "mysql": ("xianyu-admin-mysql", "mysql:8.4.13"),
+    "redis": ("xianyu-crawler-redis", "redis:7.4.12-alpine"),
+    "crawler-postgres": ("xianyu-crawler-postgres", "postgres:16.15-alpine"),
 }
 BACKEND_BUNDLE_ITEMS = [
     "apps/core-api",

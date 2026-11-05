@@ -215,9 +215,9 @@ def test_ci_builds_and_scans_every_production_container_subject():
         "./apps/user-web",
     }
     expected_external_images = {
-        "mysql:8.4.10",
-        "redis:7.4.9-alpine",
-        "postgres:16.14-alpine",
+        "mysql:8.4.13",
+        "redis:7.4.12-alpine",
+        "postgres:16.15-alpine",
         "quay.io/prometheus/blackbox-exporter:v0.28.0",
         "prom/alertmanager:v0.32.1",
         "prom/prometheus:v3.5.3",

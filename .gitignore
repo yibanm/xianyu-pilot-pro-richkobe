@@ -70,6 +70,9 @@ id_rsa*
 logs/
 tmp/
 temp/
+# 例外：admin-web 演示页依赖的 mock 数据（曾被上面 temp/ 宽规则误伤导致未入库，
+# clone 后 npm run typecheck 报 TS2307 Cannot find module '@/mock/temp/formData'）
+!apps/admin-web/src/mock/temp/
 .tmp/
 .cache/
 .gradle/
